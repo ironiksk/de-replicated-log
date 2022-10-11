@@ -1,0 +1,73 @@
+version: '3.3'
+
+services:
+
+  master:
+    container_name: rlog_master
+    image: rlog
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes: []
+    environment:
+      PORT: 8080
+      role: MASTER # SECONDARY
+    command: |
+      python3 /app/src/main.py -r MASTER -s http://secondary1:8081 http://secondary2:8082
+    # bash -c '
+    #   set -x
+    #   supervisord -c /app/supervisord.conf
+    # '
+    networks:
+      - default
+    ports:
+      - 8080:8080
+
+  secondary1:
+    container_name: rlog_secondary1
+    image: rlog
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes: []
+    environment:
+      PORT: 8081
+      ROLE: SECONDARY # SECONDARY MASTER
+
+    command: |
+      python3 /app/src/main.py -r SECONDARY -m http://master:8080
+    # bash -c '
+    #   set -x
+    #   supervisord -c /app/supervisord.conf
+    # '
+    networks:
+      - default
+    ports:
+      - 8081:8081
+
+
+  secondary2:
+    container_name: rlog_secondary2
+    image: rlog
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes: []
+    environment:
+      PORT: 8082
+      ROLE: SECONDARY # SECONDARY MASTER
+
+    command: |
+      python3 /app/src/main.py -r SECONDARY -m http://master:8080
+    # bash -c '
+    #   set -x
+    #   supervisord -c /app/supervisord.conf
+    # '
+    networks:
+      - default
+    ports:
+      - 8082:8082
+
+
+networks:
+  default:
