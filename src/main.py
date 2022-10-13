@@ -3,13 +3,13 @@ import argparse
 import logging
 
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.responses import JSONResponse
 
 # from omegaconf import OmegaConf, MISSING
 # from base_cli import BaseCLI
-from const import Message, MessageResponse, MessageListResponse
-from rlog import RLog, RLogMaster
+from const import LogRequest, LogResponse, LogListResponse, Item, LogNodeType, req2item, item2resp, RegisterSecondaryRequest
+from rlog import rlog_builder
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -17,16 +17,13 @@ logging.info('Initializing service')
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-r', '--role', type=str, default='MASTER')
-parser.add_argument('-s', '--secondaries', nargs='+', default=[])
-parser.add_argument('-m', '--master', type=str, default=None)
-
+parser.add_argument('-r', '--role', type=LogNodeType, choices=list(LogNodeType), default=LogNodeType.MASTER)
+parser.add_argument('-m', '--master', type=str, default=None, help='URL to master')
+parser.add_argument('--port', type=int, default=int(os.environ.get("PORT", 8080)), help='Service port')
 args = parser.parse_args()
-ROLE = args.role
 
 
-# RLOG = RLog()
-RLOG = RLogMaster(role=args.role, master=args.master, replicas=args.secondaries)
+RLOG = rlog_builder(role=args.role, master=args.master, port=args.port)
 
 
 app = FastAPI(
@@ -35,18 +32,32 @@ app = FastAPI(
     debug=True)
 
 
-@app.post("/log", response_model=MessageResponse, name="log:append")
-async def log_append(req: Message):
-    logging.debug(req)
-    _id, _msg = await RLOG.append(req.msg)
-    return MessageResponse(id=_id, msg=_msg)
+@app.post("/log/{log_id}", name="log:append_known")
+async def log_append_id(log_id: str, req: LogRequest):
+    item = req2item(req)
+    item.id = log_id
+    _item = await RLOG.append(item)
+    return item2resp(_item)
 
 
-@app.get("/logs", response_model=MessageListResponse, name="logs:get")
+@app.post("/log", response_model=LogResponse, name="log:append_new")
+async def log_append(req: LogRequest):
+    _item = await RLOG.append(req2item(req))
+    return item2resp(_item)
+
+
+@app.get("/logs", response_model=LogListResponse, name="logs:get")
 async def logs_get():
-    return MessageListResponse(msgs=[
-        MessageResponse(id=_id, msg=_msg) for (_id, _msg) in RLOG.get_all()
-    ])
+    items = await RLOG.get_all()
+    return LogListResponse(logs=[item2resp(it) for it in items])
+
+
+@app.post("/register", name="master:register")
+async def register_secondary(secondary: RegisterSecondaryRequest, request: Request):
+    await RLOG.add_secondary(secondary.node_id, f'http://{request.client.host}:{secondary.port}')
+    # resp = RegisterSecondaryResponse(status=True)
+    # return resp
+    return JSONResponse({'status': 'success'})
 
 
 @app.get("/healthcheck")
@@ -55,6 +66,6 @@ def healthcheck():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    uvicorn.run(app, debug=False, host="0.0.0.0", port=args.port)
 
 
