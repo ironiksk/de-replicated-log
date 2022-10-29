@@ -26,7 +26,8 @@ class Item:
     ) -> None:
         
         self.payload = payload
-        self.id = id or self._generate_id()
+        # self.id = id or self._generate_id()
+        self.id = -1
         self.t0 = time.time()
         self.node_id = node_id
 
@@ -44,27 +45,27 @@ class Item:
 
 
 class LogRequest(BaseModel):
-    msg: str = Field(..., title="Message")
+    id: Optional[str] # = Field(..., title="Message ID")
+    t0: Optional[float] # = Field(..., title="Message timestamp")
+    node_id: Optional[str] # = Field(..., title="Node ID")
+    payload: Dict[str, Any] = Field({'msg': 'message'}, title="Object to log")
 
-class LogResponse(LogRequest):
-    id: str = Field(..., title="Message ID")
 
 class LogListResponse(BaseModel):
-    logs: List[LogResponse] = []
+    # logs: List[LogResponse] = []
+    __root__: List[LogRequest]
 
 
 def req2item(req: LogRequest) -> Item:
-    item = Item(
-        payload={
-            'msg': req.msg
-        }
-    )
+    item = Item().from_dict(req)
     return item
 
-def item2resp(item: Item) -> LogResponse:
-    resp = LogResponse(
+def item2resp(item: Item) -> LogRequest:
+    resp = LogRequest(
         id=item.id,
-        msg=item.payload['msg']
+        t0=item.t0,
+        node_id=item.node_id,
+        payload=item.payload
     )
     return resp
 
@@ -74,4 +75,5 @@ class RegisterSecondaryResponse(BaseModel):
 
 class RegisterSecondaryRequest(BaseModel):
     node_id: str = Field(..., title="Secondary node ID")
-    port: int = Field(..., title='Secondary API port')
+    url: str = Field(..., title="Secondary URL")
+    role: str = Field(..., title="Secondary role")

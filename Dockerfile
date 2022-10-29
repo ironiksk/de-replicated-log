@@ -11,7 +11,8 @@ RUN pip install \
 		uvicorn \
 		fastapi \
 		python-multipart \
-		aiohttp
+		aiohttp \
+		aiohttp_retry
 
 
 WORKDIR /app
