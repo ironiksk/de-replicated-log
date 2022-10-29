@@ -12,7 +12,7 @@ from const import LogRequest, LogListResponse, Item, LogNodeType, req2item, item
 from rlog import RLogServer
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logging.info('Initializing service')
 
 

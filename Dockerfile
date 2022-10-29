@@ -12,7 +12,8 @@ RUN pip install \
 		fastapi \
 		python-multipart \
 		aiohttp \
-		aiohttp_retry
+		aiohttp_retry \
+		requests
 
 
 WORKDIR /app

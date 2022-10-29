@@ -7,7 +7,7 @@ from const import Item, LogNodeType, req2item
 from utils import async_post, async_get, async_put, post, get
 
 import logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 from threading import Thread
 
 def urljoin(url, req):
@@ -33,7 +33,9 @@ class RLog(object):
         # WARNING: assigned outside
         # item.id = self.get_uuid()
         
-        time.sleep(5)
+        # TEST: add delay before appending
+        # time.sleep(5)
+
         self.__db[item.id] = item
         return item
 
@@ -77,7 +79,6 @@ class RLogRemote(RLog):
         
 
 
-
 class RLogServer(object):
     """docstring for RLogServer"""
     def __init__(self, url:str, master_url:str = None):
@@ -114,6 +115,7 @@ class RLogServer(object):
                 retries += 1
             else:
                 retries = 0
+                logging.info(f'Healthcheck OK {node._url}')
             if retries > 3:
                 logging.error(f'Target {node._url} not healthy... Remove...')
                 # WARNING: not thread-safe. TODO: add sync privitive
@@ -123,7 +125,7 @@ class RLogServer(object):
 
 
     def add_node(self, url, role):
-        logging.debug(f'Add `{role}` node with {url}')
+        logging.info(f'Add `{role}` node with {url}')
         node = RLogRemote(url=url, role=role)
         self._threads_healthcheck.append(
             Thread(target=self._node_healthcheck_thread, args=(node,))
@@ -133,7 +135,7 @@ class RLogServer(object):
         return True
         
     def add_node_on_master(self):
-        # TODO: process exception if cannot register target     
+        # TODO: process exception if cannot register target
         ret = post(self.master_url + '/register', {
             'url': self._url,
             'role': 'secondary',
