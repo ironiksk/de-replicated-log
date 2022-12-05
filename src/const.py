@@ -22,7 +22,8 @@ class Item:
     def __init__(self, 
         payload: Optional[Dict[str, Any]] = None, 
         id: Optional[str] = None, 
-        node_id: Optional[str] = None
+        node_id: Optional[str] = None,
+        w: Optional[int] = None
     ) -> None:
         
         self.payload = payload
@@ -30,6 +31,7 @@ class Item:
         self.id = -1
         self.t0 = time.time()
         self.node_id = node_id
+        self.w = w
 
     def _generate_id(self) -> str:
         return uuid.uuid4().hex[:16]
@@ -48,6 +50,7 @@ class LogRequest(BaseModel):
     id: Optional[str] # = Field(..., title="Message ID")
     t0: Optional[float] # = Field(..., title="Message timestamp")
     node_id: Optional[str] # = Field(..., title="Node ID")
+    w: Optional[int] = 1
     payload: Dict[str, Any] = Field({'msg': 'message'}, title="Object to log")
 
 

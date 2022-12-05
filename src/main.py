@@ -48,13 +48,14 @@ def log_get_id(log_id: str):
 
 @app.post("/log", response_model=LogRequest, name="log:append_new")
 def log_append(req: LogRequest):
-    _item = RLOG.append(req2item(req))
+    l = req2item(req)
+    _item = RLOG.append(l)
     return item2resp(_item)
 
 
 @app.get("/logs", name="logs:get")
-def logs_get():
-    items = RLOG.get_all()
+def logs_get(r:int=1):
+    items = RLOG.get_all(r=int(r))
     return [item2resp(it) for it in items]
 
 
