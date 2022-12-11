@@ -62,9 +62,15 @@ class RLog(object):
         
         # TEST: add delay before appending
         # time.sleep(5)
+        # Simplest deduplication
+        if item.id in self.__db:
+            return item
 
         self.__db[item.id] = item
         return item
+
+    def data_version(self):
+        return len(self.__db) # sorted(self.__db.keys())[-1]
 
 
 class RLogLocal(RLog):
@@ -94,7 +100,7 @@ class RLogRemote(RLog):
         
     def get_all(self, r:int=1):
         try:
-            resp = get(self._url + f'/logs?r={r}')
+            resp = get(self._url + f'/logs?r={r}', timeout=None)
             items = [req2item(r) for r in resp]
             return items
         except Exception as e:
@@ -103,7 +109,7 @@ class RLogRemote(RLog):
 
     def get(self, _id):
         try:
-            resp = get(self._url + '/log/' + _id)
+            resp = get(self._url + '/log/' + _id, timeout=None)
             return req2item(resp)
         except Exception as e:
             logging.error(f'Error during requesting secondary: {e}')
@@ -111,12 +117,20 @@ class RLogRemote(RLog):
 
     def append(self, item):
         try:
-            resp = post(self._url + '/log/' + item.id, item.to_dict())
+            resp = post(self._url + '/log/' + item.id, item.to_dict(), timeout=None)
             return req2item(resp)
         except Exception as e:
             logging.error(f'Error during requesting secondary: {e}')
             return None
         
+    def data_version(self):
+        try:
+            resp = get(self._url + f'/version')
+            return resp['version']
+        except Exception as e:
+            logging.error(f'Error during requesting secondary: {e}')
+            return None
+
 
 
 class RLogServer(object):
@@ -128,26 +142,37 @@ class RLogServer(object):
         node_id = uuid.uuid4().hex[:16]
 
         self._node = RLogLocal(node_id=node_id) # internal rlog object
+        self._master_node = None
         self.master_url = master_url
         self._url = url
 
         # run healthcheck of all linked nodes
         self._do_healthcheck = True
+        self._do_data_sync = True
+
         self._threads_healthcheck = []
 
         self._nodes = []
         if self.master_url:
-            # register this node on master
-            self.add_node_on_master()
+            # server started as secondary node, register this node on master
+            if self.add_node_on_master():
+                self._master_node = RLogRemote(url=self.master_url)
+                self._sync_thread = Thread(target=self._sync_data_thread)
+                self._sync_thread.start()
     
 
     def stop(self):
         self._do_healthcheck = False
+        self._do_data_sync = False
         [t.join() for t in self._threads_healthcheck];
+        if self._master_node:
+            self._sync_thread.join()
 
 
     def _node_healthcheck_thread(self, node):
         retries = 0
+        default_delay_s = 2
+        max_delay_s = 30
         while self._do_healthcheck:
             # TODO: probably process healthchecks in parralel
             if not node.healthcheck():
@@ -157,14 +182,29 @@ class RLogServer(object):
                 retries = 0
                 logging.info(f'Healthcheck OK {node._url}')
             if retries > 3:
-                logging.error(f'Target {node._url} not healthy... Remove...')
-                # WARNING: not thread-safe. TODO: add sync privitive
-                self._nodes.remove(node)
-                break
-            time.sleep(2)
+                logging.error(f'Target {node._url} not healthy...')
+                # # WARNING: not thread-safe. TODO: add sync privitive
+                # self._nodes.remove(node)
+                # break
+            time.sleep(min(default_delay_s + retries, max_delay_s))
+
+
+    def _sync_data_thread(self):
+        # call from secondary to sync data with master
+        default_delay_s = 2
+        while self._do_data_sync:
+            master_version = self._master_node.data_version()
+            local_version = self._node.data_version()
+            if master_version != local_version:
+                logging.info(f"Initiate secondary syncronization. Master: {master_version} Secondary: {local_version}")
+                # TODO: add linked list logic to reduce need of getting all items
+                [self._node.append(item) for item in self._master_node.get_all()]
+            time.sleep(default_delay_s)
+
 
 
     def add_node(self, url, role):
+        # Call on master node to register secondary.
         logging.info(f'Add `{role}` node with {url}')
         node = RLogRemote(url=url, role=role)
         self._threads_healthcheck.append(
@@ -176,6 +216,7 @@ class RLogServer(object):
         
     def add_node_on_master(self):
         # TODO: process exception if cannot register target
+        # call method from secondary node to register self on master
         ret = post(self.master_url + '/register', {
             'url': self._url,
             'role': 'secondary',
@@ -185,6 +226,9 @@ class RLogServer(object):
             self.add_node(self.master_url, 'master')
             return True
         return False
+
+    def data_version(self):
+        return self._node.data_version()
 
     def get_uuid_item(self):
         return self._node.get_uuid()
@@ -279,4 +323,16 @@ class RLogServer(object):
 
         return True
 
+
+# If message delivery fails (due to connection, or internal server error, or secondary is unavailable) the delivery attempts should be repeated - retry
+#   If one of the secondaries is down and w=3, the client should be blocked until the node becomes available. The client that is running in parallel shouldn’t be blocked by the blocked one.
+#   If w>1 the client should be blocked until the message will be delivered to all secondaries required by the write concern level. The client that is running in parallel shouldn’t be blocked by the blocked one.
+#   All messages that secondaries have missed due to unavailability should be replicated after (re)joining the master
+#   Retries can be implemented with an unlimited number of attempts but, possibly, with some “smart” delays logic
+#   You can specify a timeout for the master in the case if there is no response from the secondary
+# All messages should be present exactly once in the secondary log - deduplication
+#   To test deduplication you can generate some random internal server error response from the secondary after the message has been added to the log
+# The order of messages should be the same in all nodes - total order
+#   If secondary has received messages [msg1, msg2, msg4], it shouldn’t display the message ‘msg4’ until the ‘msg3’ will be received
+#   To test the total order, you can generate some random internal server error response from the secondaries
 

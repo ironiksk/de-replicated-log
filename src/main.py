@@ -68,6 +68,10 @@ async def register_secondary(req: RegisterSecondaryRequest): # , request: Reques
 def healthcheck():
     return JSONResponse({'status': 'success'})
 
+@app.get("/version")
+def version():
+    return JSONResponse({'version': RLOG.data_version()})
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=args.port)
