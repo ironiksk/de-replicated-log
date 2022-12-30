@@ -200,24 +200,24 @@ class RLogRemote(RLog):
 
 
 class HealthChecker(BaseWorker):            
-    def __init__(self):
+    def __init__(self, on_node_delete_clb=None):
         super(HealthChecker, self).__init__()
         self.__nodes = {} # id -> node instance
         self.__threads = {}
         self.__health = {}
-        self.__dead = {}
+        self.__thread_running = {}
+
+        self._on_node_delete_clb = on_node_delete_clb or (lambda node: None)
 
     def healthy(self, node):
         return self.__health[node.id]
-
-    def dead(self, node):
-        return self.__dead.get(node.id, False)
 
     def _node_healthcheck_thread(self, node):
         retries = 0
         default_delay_s = 2
         max_delay_s = 30
-        while self.should_keep_running():
+        max_retries = 5
+        while self.should_keep_running() and self.__thread_running.get(node.id, False):
             # TODO: probably process healthchecks in parralel
             self.__health[node.id] = False
             if not node.healthy():
@@ -227,17 +227,17 @@ class HealthChecker(BaseWorker):
                 retries = 0
                 logging.info(f'Healthcheck OK {node.url}')
                 self.__health[node.id] = True
-            if retries > 3:
+            if retries > max_retries:
                 logging.error(f'Target {node.url} not healthy...')
-                self.__dead[node.id] = True
-                # # WARNING: not thread-safe. TODO: add sync privitive
-                # self._nodes.remove(node)
-                # break
+                # WARNING: not thread-safe. TODO: add sync privitive
+                self._on_node_delete_clb(node)
+                break
             time.sleep(min(default_delay_s + retries, max_delay_s))
 
     def add_node(self, node):
         if node.healthy():
             self.__nodes[node.id] = node
+            self.__thread_running[node.id] = True
             self.__threads[node.id] = Thread(target=self._node_healthcheck_thread, args=(node,))
             self.__threads[node.id].start()
             self.__health[node.id] = True
@@ -247,10 +247,11 @@ class HealthChecker(BaseWorker):
     def del_node(self, node):
         if node.id not in self.__threads:
             return
-        self.__threads[node.id].stop()
+        self.__thread_running[node.id] = False
+        # self.__threads[node.id].join() # FIXME:
         del self.__threads[node.id]
         del self.__health[node.id]
-        del self.__dead[node.id]
+        del self.__thread_running[node.id]
 
     def run(self):
         while self.should_keep_running():
@@ -265,16 +266,23 @@ class SecondaryStateManagement(BaseWorker):
         self.__local_node = local_node
         self.__nodes = {} # id -> node instance
         self.__threads = {}
+        self.__thread_running = {}
 
     def _node_thread(self, node):
         retries = 0
         default_delay_s = 2
         max_delay_s = 30
         max_retries = 5
-        while self.should_keep_running():
+        while self.should_keep_running() and self.__thread_running.get(node.id, False):
             # master is source of truth, master always knows the general order. To make synced secondary is it's responsibility
             if self.__local_node.role == 'master':
-                if self.__local_node.data_version > node.data_version:
+                remote_ver = node.data_version
+                # check if version avaliable. If not - increment retries and skip all futher steps
+                if remote_ver is None:
+                    retries += 1
+                elif self.__local_node.data_version > remote_ver:
+                    # but if version exists, check history
+                    retries = 0
                     master_items = self.__local_node.get_all()
                     second_items = node.get_all()
                     for i in range(len(master_items)):
@@ -286,8 +294,8 @@ class SecondaryStateManagement(BaseWorker):
                         elif len(second_items) >= i:
                             node.append(master_items[i])
                             second_items = node.get_all()
-                else:
-                    # If master is outdated...
+                elif self.__local_node.data_version < remote_ver:
+                    # If master is outdated... bug and should be handled
                     pass
             
             time.sleep(min(default_delay_s + retries, max_delay_s))
@@ -295,18 +303,23 @@ class SecondaryStateManagement(BaseWorker):
     def add_node(self, node):
         if node.healthy():
             self.__nodes[node.id] = node
+            self.__thread_running[node.id] = True
             self.__threads[node.id] = Thread(target=self._node_thread, args=(node,))
             self.__threads[node.id].start()
             return True
         return False
 
     def del_node(self, node):
-        pass
+        if node.id not in self.__threads:
+            return
+        self.__thread_running[node.id] = False
+        # self.__threads[node.id].join() # FIXME:
+        del self.__threads[node.id]
+        del self.__thread_running[node.id]
 
     def run(self):
         while self.should_keep_running():
             time.sleep(1)
-
 
 
 
@@ -321,7 +334,7 @@ class RLogServer(object):
         self._master_node = None
         self._local_node = self._nodes[0] # reference on self node
         
-        self._hc_worker = HealthChecker()
+        self._hc_worker = HealthChecker(self.del_remote_node)
         self._hc_worker.start()
         self._sc_worker = SecondaryStateManagement(self._local_node)
         self._sc_worker.start()
@@ -333,6 +346,13 @@ class RLogServer(object):
 
     def stop(self):
         self._hc_worker.stop()
+
+    def del_remote_node(self, node):
+        logging.info(f'Remove node {node.id}')
+        index = [i for i, n in enumerate(self._nodes) if n.id==node.id]
+        self._nodes.remove(node)
+        self._hc_worker.del_node(node)
+        self._sc_worker.del_node(node)
 
     def add_remote_node(self, url):
         # Function calls on node to register node from URL.
@@ -383,6 +403,7 @@ class RLogServer(object):
 
         def _run_on_node(i, node, result, latch=None):
             # if node.healthy(): # TODO: could be a problem if node has uncestant state
+            # throw problem if message with id already exists in secondary (for append method)
             handler = getattr(node, cmd)
             result[i] = handler(**kwargs)
             latch.count_down()
