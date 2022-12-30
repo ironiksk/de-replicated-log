@@ -1,5 +1,6 @@
 import uuid
 import time
+import json
 from enum import Enum
 from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
@@ -35,6 +36,9 @@ class Item:
 
     def _generate_id(self) -> str:
         return uuid.uuid4().hex[:16]
+
+    def __repr__(self):
+        return json.dumps(self.to_dict())
 
     def to_dict(self):
         _v = self.__dict__
