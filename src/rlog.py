@@ -272,7 +272,6 @@ class SecondaryStateManagement(BaseWorker):
         retries = 0
         default_delay_s = 2
         max_delay_s = 30
-        max_retries = 5
         while self.should_keep_running() and self.__thread_running.get(node.id, False):
             # master is source of truth, master always knows the general order. To make synced secondary is it's responsibility
             if self.__local_node.role == 'master':
@@ -295,8 +294,12 @@ class SecondaryStateManagement(BaseWorker):
                             node.append(master_items[i])
                             second_items = node.get_all()
                 elif self.__local_node.data_version < remote_ver:
-                    # If master is outdated... bug and should be handled
-                    pass
+                    # If master is outdated... 
+                    second_items = node.get_all()
+                    # TODO: implement quorum logic to assignt right element. Here we trust secondary
+                    for it in second_items:
+                        if self.__local_node.get(it.id) is None:
+                            self.__local_node.append(it)
             
             time.sleep(min(default_delay_s + retries, max_delay_s))
 
@@ -338,6 +341,7 @@ class RLogServer(object):
         self._hc_worker.start()
         self._sc_worker = SecondaryStateManagement(self._local_node)
         self._sc_worker.start()
+        self._read_only_mode = False
 
 
     @property
@@ -402,18 +406,20 @@ class RLogServer(object):
         assert ccount <= cnodes, f"Number of nodes {cnodes}+master is less than requested for consensus {ccount}+1"
 
         def _run_on_node(i, node, result, latch=None):
-            # if node.healthy(): # TODO: could be a problem if node has uncestant state
+            # if node.healthy(): # TODO: could be a problem if node has uncertaint state
             # throw problem if message with id already exists in secondary (for append method)
             handler = getattr(node, cmd)
             result[i] = handler(**kwargs)
-            latch.count_down()
+            if result[i] is not None:
+                latch.count_down()
             logging.info(f'Request for {i} finished with result {result[i]}')
+            # TODO: reimplement as concurency for job handler, so wait until all pool has assigned nodes
 
         # results for all nodes
         results = [None] * (len(self._nodes)-1)
         clatch = CountDownLatch(count=ccount)
 
-        # thread pool for one node
+        # thread pool for all nodes
         pool = [None] * (len(self._nodes)-1)
         for i, node in enumerate(self._nodes[1:]):
             # TODO: move to finit pool because potential zombie thread cause here
@@ -446,8 +452,9 @@ class RLogServer(object):
                         items[it.id] = [it]
                     else:
                         items[it.id].append(it)
-        # TODO: what to do if no consensus for at least one item...
+        # TODO: what to do if no consensus for at least one item... Block master and do not allow to append
         assert all(map(lambda its: len(its)>=r, items.values())), 'No consensus found for one element. Break'
+        # TODO: clarify if service should be available if no quorum
         
         # get 0 element from each list of results and return as array
         return [ items[i][0] for i in sorted(items.keys(), key=lambda x: int(x)) ]
@@ -474,22 +481,9 @@ class RLogServer(object):
                 continue
             assert results[i].id == item.id, 'ID for item in Secondaary should match with local'
             retc+=1
+        # TODO: what to do if no consensus for at least one item... Block master and do not allow to append
         assert retc >= item.w-1, 'Cannot append item, consensus has not achieved'
+        # TODO: clarify if service should be available if no quorum
 
         return self._local_node.append(item)
-
-
-
-
-# If message delivery fails (due to connection, or internal server error, or secondary is unavailable) the delivery attempts should be repeated - retry
-#   If one of the secondaries is down and w=3, the client should be blocked until the node becomes available. The client that is running in parallel shouldn’t be blocked by the blocked one.
-#   If w>1 the client should be blocked until the message will be delivered to all secondaries required by the write concern level. The client that is running in parallel shouldn’t be blocked by the blocked one.
-#   All messages that secondaries have missed due to unavailability should be replicated after (re)joining the master
-#   Retries can be implemented with an unlimited number of attempts but, possibly, with some “smart” delays logic
-#   You can specify a timeout for the master in the case if there is no response from the secondary
-# All messages should be present exactly once in the secondary log - deduplication
-#   To test deduplication you can generate some random internal server error response from the secondary after the message has been added to the log
-# The order of messages should be the same in all nodes - total order
-#   If secondary has received messages [msg1, msg2, msg4], it shouldn’t display the message ‘msg4’ until the ‘msg3’ will be received
-#   To test the total order, you can generate some random internal server error response from the secondaries
 
